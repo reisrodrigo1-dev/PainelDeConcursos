@@ -1,0 +1,56 @@
+rules_version = '2';
+
+// Regras de segurança do Storage — Painel de Concursos.
+// Princípio: padrão fechado, segmentação por dono, limite de tamanho e
+// validação de contentType em todo upload.
+//
+// IMPORTANTE: só protege os arquivos DEPOIS de publicado:
+//   firebase deploy --only storage
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+
+    function isPdf() {
+      return request.resource.contentType == 'application/pdf';
+    }
+
+    function maxMB(n) {
+      return request.resource.size < n * 1024 * 1024;
+    }
+
+    // ---------- Padrão: nega tudo ----------
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    // ---------- avatars: leitura pública, dono escreve ----------
+    match /avatars/{uid}/{arquivo} {
+      allow read: if true;
+      allow write: if isOwner(uid) && isImage() && maxMB(5);
+      allow delete: if isOwner(uid);
+    }
+
+    // ---------- editais/materiais: PDFs públicos, só admin sobe ----------
+    // Editais e materiais de estudo do painel. Qualquer um baixa; só admin publica.
+    match /materiais/{arquivo} {
+      allow read: if true;
+      allow write: if isAdmin() && (isImage() || isPdf()) && maxMB(20);
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.admin == true;
+    }
+  }
+}

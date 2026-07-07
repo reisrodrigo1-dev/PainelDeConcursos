@@ -1,0 +1,90 @@
+rules_version = '2';
+
+// Regras de segurança do Firestore — Painel de Concursos.
+// Princípio: tudo começa FECHADO. Cada coleção libera o mínimo, valida campos
+// e tipos, e checa posse em update/delete.
+//
+// IMPORTANTE: este arquivo só protege o banco DEPOIS de publicado:
+//   firebase deploy --only firestore:rules
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- Funções auxiliares ----------
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Admin via custom claim definida no servidor (Admin SDK).
+    // NUNCA leia "isAdmin" de um documento que o cliente possa escrever.
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.admin == true;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isStr(v, max) {
+      return v is string && v.size() > 0 && v.size() <= max;
+    }
+
+    function isEmail(s) {
+      return s is string && s.matches('^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$');
+    }
+
+    function only(data, campos) {
+      return data.keys().hasOnly(campos);
+    }
+
+    // ---------- Padrão: nega tudo ----------
+    // Qualquer caminho sem regra explícita abaixo cai aqui e é negado.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---------- users: cada um cuida do seu (dado pessoal / LGPD) ----------
+    match /users/{uid} {
+      // Nome e e-mail são dado pessoal: só o próprio dono ou admin lê.
+      allow read: if isOwner(uid) || isAdmin();
+
+      allow create: if isOwner(uid)
+                    && only(request.resource.data, ['nome', 'email', 'criadoEm'])
+                    && isStr(request.resource.data.nome, 120)
+                    && isEmail(request.resource.data.email)
+                    && request.resource.data.criadoEm is timestamp;
+
+      // "role"/"admin" são intocáveis pelo cliente.
+      allow update: if isOwner(uid)
+                    && only(request.resource.data, ['nome', 'email', 'criadoEm'])
+                    && isStr(request.resource.data.nome, 120)
+                    && isEmail(request.resource.data.email)
+                    && !request.resource.data.diff(resource.data)
+                          .affectedKeys().hasAny(['role', 'admin', 'isAdmin']);
+
+      allow delete: if isOwner(uid) || isAdmin();
+    }
+
+    // ---------- concursos: catálogo público, só admin edita ----------
+    // Leitura liberada (qualquer visitante vê os concursos).
+    // Escrita restrita a admin — o painel é curado, não colaborativo.
+    match /concursos/{concursoId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ---------- questoes: só logado lê, só admin escreve ----------
+    // Banco de questões é conteúdo do produto: exige login para consumir.
+    match /questoes/{questaoId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // ---------- config: leitura pública, escrita só admin ----------
+    match /config/{doc} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}
